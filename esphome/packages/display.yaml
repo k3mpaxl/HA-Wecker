@@ -1,0 +1,360 @@
+font:
+  - file: fonts/pixel-5x7.bdf
+    id: clock_font
+    size: 7
+    glyphs: " 0123456789:"
+
+  - file: fonts/pixel-3x5.bdf
+    id: tiny_font
+    size: 5
+    glyphs: " !-.0123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+globals:
+  # Template entities publish their restored values while components are still
+  # being set up. Do not touch the addressable light before its LightState has
+  # been attached to the hardware output.
+  - id: display_runtime_ready
+    type: bool
+    restore_value: false
+    initial_value: "false"
+
+  - id: matrix_light_initialized
+    type: bool
+    restore_value: false
+    initial_value: "false"
+
+  # Colors are scaled before gamma correction. With gamma 2.0, sqrt(brightness)
+  # produces approximately the same perceived output as light-level dimming.
+  - id: display_color_scale
+    type: float
+    restore_value: false
+    initial_value: "0.6f"
+
+  # Advanced by alarm_animation_loop; only meaningful while a wake alarm rings.
+  - id: alarm_animation_frame
+    type: uint8_t
+    restore_value: false
+    initial_value: "0"
+
+  # 0 default; 1 date; 2 alarm 1; 3 alarm 2; 4 forced clock;
+  # 5 reading timer remaining.
+  - id: display_page
+    type: int
+    restore_value: false
+    initial_value: "0"
+
+number:
+  - platform: template
+    id: daytime_brightness
+    name: Displayhelligkeit Tag
+    icon: mdi:brightness-6
+    unit_of_measurement: "%"
+    min_value: 5
+    max_value: 60
+    step: 1
+    initial_value: 35
+    optimistic: true
+    restore_value: true
+    on_value:
+      then:
+        - script.execute:
+            id: apply_display_brightness
+            refresh_display: true
+
+  - platform: template
+    id: nighttime_brightness
+    name: Displayhelligkeit Dunkel
+    icon: mdi:brightness-3
+    unit_of_measurement: "%"
+    min_value: 1
+    max_value: 30
+    step: 1
+    initial_value: 5
+    optimistic: true
+    restore_value: true
+    on_value:
+      then:
+        - script.execute:
+            id: apply_display_brightness
+            refresh_display: true
+
+switch:
+  # On by default: the matrix stays dark and shows only the alarm/reading
+  # markers. The clock appears for a few seconds on a button press, and the
+  # display lights up on its own while an alarm or timer rings.
+  - platform: template
+    id: clock_on_demand
+    name: Uhr nur auf Tastendruck
+    icon: mdi:eye-off
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+    on_turn_on:
+      - script.execute: refresh_clock_state
+    on_turn_off:
+      - script.execute: refresh_clock_state
+
+  - platform: template
+    id: automatic_brightness
+    name: Automatische Helligkeit
+    icon: mdi:brightness-auto
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+    on_turn_on:
+      - script.execute:
+          id: apply_display_brightness
+          refresh_display: true
+    on_turn_off:
+      - script.execute:
+          id: apply_display_brightness
+          refresh_display: true
+
+script:
+  - id: apply_display_brightness
+    mode: restart
+    parameters:
+      refresh_display: bool
+    then:
+      - if:
+          condition:
+            lambda: return id(display_runtime_ready);
+          then:
+            - lambda: |-
+                float target = id(daytime_brightness).state;
+                if (isnan(target)) target = 35.0f;
+
+                if (id(automatic_brightness).state) {
+                  const float raw = id(ambient_light_raw).state;
+                  if (!isnan(raw)) {
+                    const float normalized =
+                        std::max(0.0f, std::min(1.0f, raw / 3.3f));
+                    float dark = id(nighttime_brightness).state;
+                    if (isnan(dark)) dark = 5.0f;
+                    target = dark + (target - dark) * sqrtf(normalized);
+                  }
+                }
+
+                target = std::max(1.0f, std::min(60.0f, target));
+                id(display_color_scale) = sqrtf(target / 100.0f);
+
+                // A LightCall on an addressable strip fills every pixel with
+                // the light state's solid color. Do that only once, in black,
+                // then let the display component own the pixel buffer.
+                if (!id(matrix_light_initialized)) {
+                  auto call = id(matrix_light).turn_on();
+                  call.set_brightness(1.0f);
+                  call.set_rgb(0.0f, 0.0f, 0.0f);
+                  call.perform();
+                  id(matrix_light_initialized) = true;
+                }
+            - if:
+                condition:
+                  lambda: return refresh_display;
+                then:
+                  - component.update: matrix_display
+
+  # Recalculate all state which affects the default clock page, then transmit
+  # it immediately. The setup guard prevents restored entities from touching
+  # the matrix before its LightState exists.
+  - id: refresh_clock_state
+    mode: restart
+    then:
+      - if:
+          condition:
+            lambda: return id(display_runtime_ready);
+          then:
+            - lambda: id(sleep_mode_active).loop();
+            - component.update: next_alarm
+            - component.update: matrix_display
+
+  # A ringing wake alarm refreshes the matrix continuously instead of once a
+  # minute. The loop exits by itself as soon as the alarm stops, so it costs
+  # nothing while idle. The reading timer deliberately stays calm.
+  - id: alarm_animation_loop
+    mode: restart
+    then:
+      - while:
+          condition:
+            lambda: |-
+              return id(alarm_state) == 1 || id(alarm_state) == 2 ||
+                     id(alarm_state) == 5;
+          then:
+            - lambda: id(alarm_animation_frame)++;
+            - component.update: matrix_display
+            - delay: 120ms
+
+  - id: show_temporary_page
+    mode: restart
+    parameters:
+      page: int
+    then:
+      - lambda: id(display_page) = page;
+      - component.update: matrix_display
+      - delay: 4s
+      - lambda: |-
+          if (id(display_page) == page) id(display_page) = 0;
+      - component.update: matrix_display
+
+display:
+  - platform: addressable_light
+    id: matrix_display
+    addressable_light_id: matrix_light
+    width: 32
+    height: 8
+    # The minute trigger and explicit user/state actions own normal refreshes.
+    # This component does not accept `never`; keep only a harmless daily
+    # watchdog refresh as a fallback.
+    update_interval: 24h
+    pixel_mapper: |-
+      // TC001 rows are wired in a horizontal serpentine pattern.
+      if ((y % 2) == 0) return y * 32 + x;
+      return y * 32 + (31 - x);
+    lambda: |-
+      const float scale =
+          std::max(0.0f, std::min(1.0f, id(display_color_scale)));
+      const auto scaled = [scale](uint8_t red, uint8_t green,
+                                  uint8_t blue) -> Color {
+        return Color(static_cast<uint8_t>(lroundf(red * scale)),
+                     static_cast<uint8_t>(lroundf(green * scale)),
+                     static_cast<uint8_t>(lroundf(blue * scale)));
+      };
+
+      const Color background = scaled(0, 0, 0);
+      const Color clock_color = scaled(150, 185, 255);
+      const Color alarm1_on = scaled(0, 230, 70);
+      const Color alarm2_on = scaled(255, 145, 0);
+      const Color alarm_off = scaled(24, 0, 0);
+      const Color warning = scaled(255, 80, 0);
+      // Clearly distinct from the green/orange alarm markers.
+      const Color reading = scaled(190, 90, 255);
+      it.fill(background);
+
+      const auto now = id(rtc_time).now();
+      const int state = id(alarm_state);
+      const bool ringing = state == 1 || state == 2 || state == 5;
+      const bool snoozed = state == 3 || state == 4 || state == 6;
+
+      if (state == 7) {
+        it.rectangle(0, 0, 32, 8, reading);
+        it.print(6, 1, id(tiny_font), reading, "LESEN");
+        return;
+      }
+
+      if (ringing) {
+        // Classic colour wheel, so the border cycles through full saturation
+        // instead of the washed-out result of interpolating RGB directly.
+        const auto wheel = [&scaled](uint8_t pos) -> Color {
+          if (pos < 85) return scaled(pos * 3, 255 - pos * 3, 0);
+          if (pos < 170) {
+            pos -= 85;
+            return scaled(255 - pos * 3, 0, pos * 3);
+          }
+          pos -= 170;
+          return scaled(0, pos * 3, 255 - pos * 3);
+        };
+
+        // Top and bottom row rotate in opposite directions.
+        const uint8_t frame = id(alarm_animation_frame) * 5;
+        for (int x = 0; x < 32; x++) {
+          it.draw_pixel_at(x, 0, wheel(static_cast<uint8_t>(x * 8 + frame)));
+          it.draw_pixel_at(31 - x, 7, wheel(static_cast<uint8_t>(x * 8 - frame)));
+        }
+
+        // "W1" and "W2" are 8 px wide, "W12" is 12 px, and the time is 20 px.
+        // Placing the time at x=12 lines all three cases up on the right edge.
+        // "W12" leaves only the usual 1 px character gap before the time, so
+        // the label must never share the colour of the clock.
+        const char *label = state == 1 ? "W1" : (state == 2 ? "W2" : "W12");
+        const Color label_color =
+            state == 1 ? alarm1_on
+                       : (state == 2 ? alarm2_on : scaled(255, 240, 0));
+        it.print(0, 1, id(tiny_font), label_color, label);
+        if (now.is_valid()) {
+          it.printf(12, 1, id(tiny_font), clock_color, "%02d:%02d",
+                    now.hour, now.minute);
+        } else {
+          it.print(12, 1, id(tiny_font), clock_color, "--:--");
+        }
+        return;
+      }
+
+      if (snoozed) {
+        int remaining = 0;
+        if (now.is_valid() && id(snooze_until_epoch) > now.timestamp) {
+          remaining = static_cast<int>((id(snooze_until_epoch) - now.timestamp + 59) / 60);
+        }
+        if (state == 3) it.printf(4, 1, id(tiny_font), warning, "S1 %02dM", remaining);
+        else if (state == 4) it.printf(4, 1, id(tiny_font), warning, "S2 %02dM", remaining);
+        else it.printf(2, 1, id(tiny_font), warning, "S12 %02dM", remaining);
+        return;
+      }
+
+      if (!now.is_valid()) {
+        it.print(8, 1, id(tiny_font), warning, "ZEIT");
+        return;
+      }
+
+      if (id(display_page) == 1) {
+        static const char *const weekdays[] = {"SO", "MO", "DI", "MI", "DO", "FR", "SA"};
+        const int index = std::max(1, std::min(7, static_cast<int>(now.day_of_week))) - 1;
+        it.printf(0, 1, id(tiny_font), clock_color, "%s %02d.%02d",
+                  weekdays[index], now.day_of_month, now.month);
+        return;
+      }
+
+      if (id(display_page) == 5) {
+        int remaining = 0;
+        if (now.is_valid() && id(reading_end_epoch) > now.timestamp) {
+          remaining = static_cast<int>(
+              (id(reading_end_epoch) - now.timestamp + 59) / 60);
+        }
+        it.printf(6, 1, id(tiny_font), reading, "L %02dM", remaining);
+        return;
+      }
+
+      if (id(display_page) == 2 || id(display_page) == 3) {
+        const bool first = id(display_page) == 2;
+        const auto alarm = first ? id(alarm_1_time).state_as_esptime()
+                                 : id(alarm_2_time).state_as_esptime();
+        const bool enabled = first ? id(alarm_1_enabled).state
+                                   : id(alarm_2_enabled).state;
+        const Color color =
+            enabled ? (first ? alarm1_on : alarm2_on) : scaled(180, 0, 0);
+        it.printf(0, 1, id(tiny_font), color, "W%d %02d:%02d",
+                  first ? 1 : 2, alarm.hour, alarm.minute);
+        return;
+      }
+
+      // The outer markers remain visible with the clock: left = first lesson,
+      // right = second lesson. A two-pixel bar means enabled; a dim dot means off.
+      if (id(alarm_1_enabled).state) {
+        it.draw_pixel_at(0, 3, alarm1_on);
+        it.draw_pixel_at(0, 4, alarm1_on);
+      } else {
+        it.draw_pixel_at(0, 4, alarm_off);
+      }
+      if (id(alarm_2_enabled).state) {
+        it.draw_pixel_at(31, 3, alarm2_on);
+        it.draw_pixel_at(31, 4, alarm2_on);
+      } else {
+        it.draw_pixel_at(31, 4, alarm_off);
+      }
+
+      // A running reading timer stays visible in sleep mode too: a bar along
+      // the bottom row whose length is the remaining time (32 px = full),
+      // dimmed so it does not light the room.
+      if (id(reading_end_epoch) > 0 && id(reading_end_epoch) > now.timestamp) {
+        const uint32_t remaining = id(reading_end_epoch) - now.timestamp;
+        const uint32_t total = std::max(id(reading_total_seconds), remaining);
+        const int pixels = static_cast<int>((remaining * 32ULL + total - 1) / total);
+        const Color bar = scaled(76, 36, 102);
+        for (int x = 0; x < pixels; x++) it.draw_pixel_at(x, 7, bar);
+      }
+
+      // With the clock on demand (or in sleep mode) the default page contains
+      // only the markers. All temporary pages remain available via the buttons.
+      if ((id(clock_on_demand).state || id(sleep_mode_active).state) &&
+          id(display_page) != 4) {
+        return;
+      }
+
+      it.printf(3, 0, id(clock_font), clock_color, "%02d:%02d", now.hour, now.minute);

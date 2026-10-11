@@ -1,0 +1,129 @@
+binary_sensor:
+  - platform: gpio
+    id: button_left
+    internal: true
+    pin:
+      number: GPIO26
+      inverted: true
+      mode:
+        input: true
+        pullup: true
+    filters:
+      - delayed_on: 20ms
+      - delayed_off: 20ms
+    on_click:
+      - min_length: 50ms
+        max_length: 700ms
+        then:
+          - if:
+              condition:
+                lambda: |-
+                  return id(alarm_state) == 1 || id(alarm_state) == 2 ||
+                         id(alarm_state) == 5 || id(alarm_state) == 7;
+              then:
+                - script.execute: dismiss_ringing
+              else:
+                - if:
+                    condition:
+                      lambda: return id(display_page) == 2;
+                    then:
+                      - switch.toggle: alarm_1_enabled
+                - script.execute:
+                    id: show_temporary_page
+                    page: 2
+      - min_length: 701ms
+        max_length: 30s
+        then:
+          - if:
+              condition:
+                lambda: return id(alarm_state) != 0;
+              then:
+                - script.execute: stop_alarm
+
+  - platform: gpio
+    id: button_middle
+    internal: true
+    pin:
+      number: GPIO27
+      inverted: true
+      mode:
+        input: true
+        pullup: true
+    filters:
+      - delayed_on: 20ms
+      - delayed_off: 20ms
+    on_click:
+      - min_length: 50ms
+        max_length: 700ms
+        then:
+          - if:
+              condition:
+                lambda: |-
+                  return id(alarm_state) == 1 || id(alarm_state) == 2 ||
+                         id(alarm_state) == 5 || id(alarm_state) == 7;
+              then:
+                - script.execute: dismiss_ringing
+              else:
+                - if:
+                    condition:
+                      lambda: |-
+                        return (id(clock_on_demand).state ||
+                                id(sleep_mode_active).state) &&
+                               id(display_page) != 4;
+                    then:
+                      - script.execute:
+                          id: show_temporary_page
+                          page: 4
+                    else:
+                      - script.execute:
+                          id: show_temporary_page
+                          page: 1
+      - min_length: 701ms
+        max_length: 30s
+        then:
+          - if:
+              condition:
+                lambda: return id(alarm_state) != 0;
+              then:
+                - script.execute: stop_alarm
+
+  - platform: gpio
+    id: button_right
+    internal: true
+    pin:
+      number: GPIO14
+      inverted: true
+      mode:
+        input: true
+        pullup: true
+    filters:
+      - delayed_on: 20ms
+      - delayed_off: 20ms
+    on_click:
+      - min_length: 50ms
+        max_length: 700ms
+        then:
+          - if:
+              condition:
+                lambda: |-
+                  return id(alarm_state) == 1 || id(alarm_state) == 2 ||
+                         id(alarm_state) == 5 || id(alarm_state) == 7;
+              then:
+                - script.execute: dismiss_ringing
+              else:
+                - if:
+                    condition:
+                      lambda: return id(display_page) == 3;
+                    then:
+                      - switch.toggle: alarm_2_enabled
+                - script.execute:
+                    id: show_temporary_page
+                    page: 3
+      - min_length: 701ms
+        max_length: 30s
+        then:
+          - if:
+              condition:
+                lambda: return id(alarm_state) != 0;
+              then:
+                - script.execute: stop_alarm

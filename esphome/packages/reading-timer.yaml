@@ -1,0 +1,159 @@
+# Reading timer: started from Home Assistant (e.g. an NSPanel at bedtime),
+# counted down locally on the TC001. The device rings on its own even if
+# Home Assistant or Wi-Fi is gone by then, and a reboot resumes the countdown.
+
+globals:
+  # Unix timestamp at which the reading timer rings; 0 means inactive.
+  - id: reading_end_epoch
+    type: uint32_t
+    restore_value: true
+    initial_value: "0"
+
+  # Length of the running timer in seconds; scales the pixel bar on the matrix.
+  - id: reading_total_seconds
+    type: uint32_t
+    restore_value: true
+    initial_value: "0"
+
+number:
+  - platform: template
+    id: reading_minutes
+    name: Lesezeit
+    icon: mdi:book-clock-outline
+    unit_of_measurement: min
+    min_value: 5
+    max_value: 120
+    step: 5
+    initial_value: 20
+    optimistic: true
+    restore_value: true
+
+  # The reading timer fires at bedtime, where a long ring would be worse
+  # than a missed one. It therefore gets its own, much shorter limit.
+  - platform: template
+    id: reading_max_ring_minutes
+    name: Maximale Lesetimer-Klingeldauer
+    icon: mdi:timer-alert-outline
+    unit_of_measurement: min
+    min_value: 1
+    max_value: 10
+    step: 1
+    initial_value: 2
+    optimistic: true
+    restore_value: true
+    disabled_by_default: true
+
+text:
+  - platform: template
+    id: reading_rtttl
+    name: Klingelton Lesetimer (RTTTL)
+    icon: mdi:music-note
+    mode: text
+    min_length: 1
+    max_length: 200
+    optimistic: true
+    restore_value: true
+    # Deliberately softer and lower than the two school bells.
+    initial_value: "lesen:d=4,o=5,b=90:g,e,c,2p"
+
+sensor:
+  - platform: template
+    id: reading_remaining
+    name: Verbleibende Lesezeit
+    icon: mdi:book-clock
+    unit_of_measurement: min
+    accuracy_decimals: 0
+    state_class: measurement
+    update_interval: never
+    lambda: |-
+      if (id(reading_end_epoch) == 0) return 0.0f;
+      const auto now = id(rtc_time).now();
+      if (!now.is_valid() || id(reading_end_epoch) <= now.timestamp) return 0.0f;
+      return ceilf((id(reading_end_epoch) - now.timestamp) / 60.0f);
+
+binary_sensor:
+  - platform: template
+    id: reading_timer_running
+    name: Lesetimer läuft
+    icon: mdi:book-open-variant
+    lambda: return id(reading_end_epoch) != 0;
+
+  # Kept separate from "Klingelt" so Home Assistant can react differently:
+  # the wake alarm turns the light on, the reading timer turns it off.
+  - platform: template
+    id: reading_timer_is_ringing
+    name: Lesetimer klingelt
+    icon: mdi:book-alert
+    device_class: sound
+    lambda: return id(alarm_state) == 7;
+
+script:
+  - id: start_reading_timer
+    mode: restart
+    parameters:
+      minutes: int
+    then:
+      - lambda: |-
+          const auto now = id(rtc_time).now();
+          if (!now.is_valid() || minutes <= 0) {
+            id(reading_end_epoch) = 0;
+            return;
+          }
+          id(reading_total_seconds) = static_cast<uint32_t>(minutes) * 60;
+          id(reading_end_epoch) = now.timestamp + id(reading_total_seconds);
+      - component.update: reading_remaining
+      # Brief confirmation on the matrix so the start is visible from the bed.
+      - script.execute:
+          id: show_temporary_page
+          page: 5
+
+  - id: cancel_reading_timer
+    mode: restart
+    then:
+      - lambda: id(reading_end_epoch) = 0;
+      - if:
+          condition:
+            lambda: return id(alarm_state) == 7;
+          then:
+            - script.execute: stop_alarm
+      - component.update: reading_remaining
+      - component.update: matrix_display
+
+button:
+  - platform: template
+    name: Lesetimer 10 Minuten
+    icon: mdi:numeric-10-box-outline
+    on_press:
+      - script.execute:
+          id: start_reading_timer
+          minutes: 10
+
+  - platform: template
+    name: Lesetimer 20 Minuten
+    icon: mdi:numeric-2-box-outline
+    on_press:
+      - script.execute:
+          id: start_reading_timer
+          minutes: 20
+
+  - platform: template
+    name: Lesetimer 30 Minuten
+    icon: mdi:numeric-3-box-outline
+    on_press:
+      - script.execute:
+          id: start_reading_timer
+          minutes: 30
+
+  - platform: template
+    name: Lesetimer starten
+    icon: mdi:book-play-outline
+    on_press:
+      - script.execute:
+          id: start_reading_timer
+          minutes: !lambda return static_cast<int>(id(reading_minutes).state);
+
+  - platform: template
+    name: Lesetimer abbrechen
+    icon: mdi:book-cancel-outline
+    on_press:
+      - script.execute: cancel_reading_timer

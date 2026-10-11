@@ -1,0 +1,42 @@
+time:
+  # The RTC is read during boot so the alarm remains functional without Wi-Fi.
+  - platform: ds1307
+    id: rtc_time
+    timezone: ${timezone}
+    update_interval: never
+    on_time:
+      # Align the alarm evaluation to the start of each wall-clock minute.
+      # A plain 60-second interval would drift with the device boot time.
+      - seconds: 0
+        then:
+          - lambda: id(sleep_mode_active).loop();
+          - script.execute: evaluate_alarms
+          - component.update: next_alarm
+          - script.execute:
+              id: apply_display_brightness
+              refresh_display: true
+
+  # Network time corrects drift and writes the corrected value back to the RTC.
+  - platform: sntp
+    id: network_time
+    timezone: ${timezone}
+    servers:
+      - 0.de.pool.ntp.org
+      - 1.de.pool.ntp.org
+      - 2.de.pool.ntp.org
+    on_time_sync:
+      then:
+        - ds1307.write_time:
+            id: rtc_time
+        # If NTP corrects the clock during an alarm's grace window, do not
+        # wait until the next full minute to notice it.
+        - script.execute: evaluate_alarms
+        - component.update: matrix_display
+
+binary_sensor:
+  - platform: template
+    id: time_is_valid
+    name: Zeit gültig
+    device_class: connectivity
+    lambda: |-
+      return id(rtc_time).now().is_valid();

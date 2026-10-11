@@ -1,0 +1,54 @@
+# Optional companion automation. The TC001 buzzer works independently of this.
+# Replace light.kinderzimmer with the light or scene you want to use.
+- alias: Wecker 1 - Licht einschalten
+  id: wecker_1_licht_einschalten
+  mode: restart
+  triggers:
+    - trigger: state
+      entity_id: binary_sensor.wecker_1_klingelt
+      from: "off"
+      to: "on"
+  actions:
+    - action: light.turn_on
+      target:
+        entity_id: light.kinderzimmer
+      data:
+        brightness_pct: 35
+        transition: 20
+
+- alias: Wecker 1 - Licht bei Ende ausschalten
+  id: wecker_1_licht_beenden
+  mode: restart
+  triggers:
+    - trigger: state
+      entity_id: binary_sensor.wecker_1_klingelt
+      from: "on"
+      to: "off"
+  conditions:
+    - condition: state
+      entity_id: binary_sensor.wecker_1_schlummert
+      state: "off"
+  actions:
+    - action: light.turn_off
+      target:
+        entity_id: light.kinderzimmer
+      data:
+        transition: 5
+
+# The reading timer is the mirror image of the wake alarm: when it rings,
+# reading time is over, so the light goes off instead of on. Entirely
+# optional - the TC001 rings on its own either way.
+- alias: Wecker 1 - Licht nach Lesetimer ausschalten
+  id: wecker_1_lesetimer_licht_aus
+  mode: single
+  triggers:
+    - trigger: state
+      entity_id: binary_sensor.wecker_1_lesetimer_klingelt
+      from: "off"
+      to: "on"
+  actions:
+    - action: light.turn_off
+      target:
+        entity_id: light.kinderzimmer
+      data:
+        transition: 60

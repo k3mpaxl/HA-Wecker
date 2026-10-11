@@ -1,0 +1,36 @@
+# Wecker 1. Everything shared lives in packages/base.yaml.
+#
+# To build from GitHub instead of a local checkout (e.g. in the ESPHome Builder),
+# replace the `packages:` block with:
+#
+#   packages:
+#     wecker:
+#       url: https://github.com/k3mpaxl/HA-Wecker
+#       ref: main
+#       files: [esphome/packages/base.yaml]
+#       refresh: 1d
+substitutions:
+  device_name: wecker-1
+  friendly_name: Wecker 1
+  timezone: Europe/Berlin
+
+packages:
+  base: !include packages/base.yaml
+
+# Kept per device so each clock has its own credentials and a compromise of
+# one does not hand over the other.
+api:
+  reboot_timeout: 0s
+  encryption:
+    key: !secret wecker_1_api_encryption_key
+
+ota:
+  - platform: esphome
+    password: !secret wecker_1_ota_password
+
+# Optional: a fixed address. Remove the block to use DHCP.
+wifi:
+  manual_ip:
+    static_ip: 192.168.1.51
+    gateway: 192.168.1.1
+    subnet: 255.255.255.0

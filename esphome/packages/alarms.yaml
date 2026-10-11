@@ -1,0 +1,442 @@
+datetime:
+  - platform: template
+    id: alarm_1_time
+    name: Weckzeit 1. Stunde
+    type: time
+    optimistic: true
+    restore_value: true
+    initial_value: "06:30:00"
+    on_value:
+      then:
+        - script.execute: refresh_clock_state
+
+  - platform: template
+    id: alarm_2_time
+    name: Weckzeit 2. Stunde
+    type: time
+    optimistic: true
+    restore_value: true
+    initial_value: "07:15:00"
+    on_value:
+      then:
+        - script.execute: refresh_clock_state
+
+text:
+  - platform: template
+    id: alarm_1_rtttl
+    name: Klingelton 1. Stunde (RTTTL)
+    icon: mdi:music-note
+    mode: text
+    min_length: 1
+    max_length: 200
+    optimistic: true
+    restore_value: true
+    initial_value: "school1:d=8,o=5,b=105:c,e,g,c6,c6,g,e,c"
+
+  - platform: template
+    id: alarm_2_rtttl
+    name: Klingelton 2. Stunde (RTTTL)
+    icon: mdi:music-note
+    mode: text
+    min_length: 1
+    max_length: 200
+    optimistic: true
+    restore_value: true
+    initial_value: "school2:d=8,o=5,b=115:g,e,c,g4,c,e,g,c6"
+
+switch:
+  - platform: template
+    id: alarm_1_enabled
+    name: Wecker 1. Stunde
+    icon: mdi:alarm
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    on_turn_on:
+      - script.execute: refresh_clock_state
+    on_turn_off:
+      - script.execute: refresh_clock_state
+
+  - platform: template
+    id: alarm_2_enabled
+    name: Wecker 2. Stunde
+    icon: mdi:alarm-multiple
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    on_turn_on:
+      - script.execute: refresh_clock_state
+    on_turn_off:
+      - script.execute: refresh_clock_state
+
+  - platform: template
+    id: weekdays_only
+    name: Nur Montag bis Freitag
+    icon: mdi:calendar-week
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+    on_turn_on:
+      - script.execute: refresh_clock_state
+    on_turn_off:
+      - script.execute: refresh_clock_state
+
+number:
+  - platform: template
+    id: snooze_minutes
+    name: Schlummerdauer
+    icon: mdi:sleep
+    unit_of_measurement: min
+    min_value: 1
+    max_value: 30
+    step: 1
+    initial_value: 5
+    optimistic: true
+    restore_value: true
+
+  - platform: template
+    id: max_ring_minutes
+    name: Maximale Klingeldauer
+    icon: mdi:timer-alert-outline
+    unit_of_measurement: min
+    min_value: 1
+    max_value: 30
+    step: 1
+    initial_value: 15
+    optimistic: true
+    restore_value: true
+
+  - platform: template
+    id: missed_alarm_grace_minutes
+    name: Nachholfenster
+    icon: mdi:clock-alert-outline
+    unit_of_measurement: min
+    min_value: 0
+    max_value: 5
+    step: 1
+    initial_value: 2
+    optimistic: true
+    restore_value: true
+    disabled_by_default: true
+
+globals:
+  # 0 idle; 1/2 ringing; 3/4 snoozed; 5 ringing both; 6 snoozed both;
+  # 7 reading timer ringing (never snoozed).
+  - id: alarm_state
+    type: int
+    restore_value: true
+    initial_value: "0"
+
+  - id: ring_started_epoch
+    type: uint32_t
+    restore_value: true
+    initial_value: "0"
+
+  - id: snooze_until_epoch
+    type: uint32_t
+    restore_value: true
+    initial_value: "0"
+
+  # Day *and* wake time. Keying on the day alone blocked an alarm for the
+  # rest of the day once it had rung, so moving the wake time to a later
+  # slot on the same day silently did nothing. A new wake time is a new
+  # intention and must be allowed to ring.
+  - id: last_fired_alarm_1_key
+    type: int64_t
+    restore_value: true
+    initial_value: "-1"
+
+  - id: last_fired_alarm_2_key
+    type: int64_t
+    restore_value: true
+    initial_value: "-1"
+
+  - id: pending_alarm_id
+    type: int
+    restore_value: false
+    initial_value: "0"
+
+  - id: alarm_stop_required
+    type: bool
+    restore_value: false
+    initial_value: "false"
+
+script:
+  - id: start_alarm
+    mode: restart
+    parameters:
+      alarm_id: int
+    then:
+      - script.stop: show_temporary_page
+      - lambda: |-
+          const auto now = id(rtc_time).now();
+          id(alarm_state) = alarm_id;
+          id(ring_started_epoch) = now.is_valid() ? now.timestamp : 0;
+          id(snooze_until_epoch) = 0;
+          id(display_page) = 0;
+      - component.update: alarm_status
+      - component.update: matrix_display
+      - script.execute: alarm_sound_loop
+      - script.execute: alarm_animation_loop
+
+  - id: alarm_sound_loop
+    mode: restart
+    then:
+      - while:
+          condition:
+            lambda: |-
+              return id(alarm_state) == 1 || id(alarm_state) == 2 ||
+                     id(alarm_state) == 5 || id(alarm_state) == 7;
+          then:
+            - rtttl.play:
+                id: alarm_rtttl
+                rtttl: !lambda |-
+                  // The reading timer has its own melody. Of the wake
+                  // alarms only alarm 2 does; alarm 1 and the simultaneous
+                  // case (state 5) share melody 1.
+                  if (id(alarm_state) == 7) return id(reading_rtttl).state;
+                  return id(alarm_state) == 2 ? id(alarm_2_rtttl).state
+                                              : id(alarm_1_rtttl).state;
+            - wait_until:
+                condition:
+                  not:
+                    rtttl.is_playing:
+                      id: alarm_rtttl
+                timeout: 20s
+            - delay: 750ms
+
+  - id: snooze_alarm
+    mode: restart
+    then:
+      - if:
+          condition:
+            lambda: |-
+              return id(alarm_state) == 1 || id(alarm_state) == 2 ||
+                     id(alarm_state) == 5;
+          then:
+            - script.stop: alarm_sound_loop
+            - script.stop: alarm_animation_loop
+            - rtttl.stop:
+                id: alarm_rtttl
+            - lambda: |-
+                const auto now = id(rtc_time).now();
+                if (id(alarm_state) == 1) id(alarm_state) = 3;
+                else if (id(alarm_state) == 2) id(alarm_state) = 4;
+                else id(alarm_state) = 6;
+                id(snooze_until_epoch) = now.is_valid()
+                    ? now.timestamp + static_cast<uint32_t>(id(snooze_minutes).state * 60)
+                    : 0;
+            - component.update: alarm_status
+            - component.update: matrix_display
+
+  # A short press while something rings: wake alarms snooze, the reading
+  # timer only stops. Extending reading time stays a parent decision in
+  # Home Assistant.
+  - id: dismiss_ringing
+    mode: restart
+    then:
+      - if:
+          condition:
+            lambda: return id(alarm_state) == 7;
+          then:
+            - script.execute: stop_alarm
+          else:
+            - script.execute: snooze_alarm
+
+  - id: stop_alarm
+    mode: restart
+    then:
+      - script.stop: alarm_sound_loop
+      - script.stop: alarm_animation_loop
+      - rtttl.stop:
+          id: alarm_rtttl
+      - lambda: |-
+          id(alarm_state) = 0;
+          id(ring_started_epoch) = 0;
+          id(snooze_until_epoch) = 0;
+      - component.update: alarm_status
+      - component.update: matrix_display
+
+  - id: evaluate_alarms
+    mode: single
+    then:
+      - lambda: |-
+          id(pending_alarm_id) = 0;
+          id(alarm_stop_required) = false;
+
+          // Entity states can be NaN before their first publish; every read
+          // below goes through this so a missing value cannot silently turn
+          // into a comparison that is never true.
+          const auto num = [](float value, float fallback) {
+            return isnan(value) ? fallback : value;
+          };
+
+          const auto now = id(rtc_time).now();
+          if (!now.is_valid()) {
+            ESP_LOGW("wecker", "RTC time invalid - no alarm check");
+            return;
+          }
+
+          const bool ringing = id(alarm_state) == 1 || id(alarm_state) == 2 ||
+                               id(alarm_state) == 5 || id(alarm_state) == 7;
+          const bool snoozed = id(alarm_state) == 3 || id(alarm_state) == 4 ||
+                               id(alarm_state) == 6;
+
+          if (ringing) {
+            // A restored ringing state can outlive an invalid RTC timestamp.
+            // Start the safety timer as soon as valid time becomes available.
+            if (id(ring_started_epoch) == 0 ||
+                id(ring_started_epoch) > now.timestamp) {
+              id(ring_started_epoch) = now.timestamp;
+            }
+            const float limit = id(alarm_state) == 7
+                                    ? num(id(reading_max_ring_minutes).state, 2.0f)
+                                    : num(id(max_ring_minutes).state, 15.0f);
+            const uint32_t max_duration = static_cast<uint32_t>(limit * 60);
+            if (id(ring_started_epoch) > 0 &&
+                now.timestamp >= id(ring_started_epoch) + max_duration) {
+              id(alarm_stop_required) = true;
+            }
+
+            // A wake alarm must be allowed to pre-empt a ringing reading
+            // timer. Returning for state 7 here would postpone evaluation of
+            // the school alarms until the reading signal stops; with a long
+            // reading ring duration, their grace window could expire first.
+            if (id(alarm_state) != 7) return;
+          }
+
+          if (snoozed) {
+            // A snooze that began while the RTC was invalid carries no
+            // deadline. Without this recovery the device stays snoozed
+            // forever and never evaluates another alarm again.
+            if (id(snooze_until_epoch) == 0) {
+              ESP_LOGW("wecker", "Snoozed without deadline - re-arming");
+              id(snooze_until_epoch) =
+                  now.timestamp +
+                  static_cast<uint32_t>(num(id(snooze_minutes).state, 5.0f) * 60);
+            }
+            ESP_LOGI("wecker", "%02d:%02d state=%d snoozed, %d s left",
+                     now.hour, now.minute, id(alarm_state),
+                     static_cast<int>(id(snooze_until_epoch) - now.timestamp));
+            if (now.timestamp >= id(snooze_until_epoch)) {
+              if (id(alarm_state) == 3) id(pending_alarm_id) = 1;
+              else if (id(alarm_state) == 4) id(pending_alarm_id) = 2;
+              else id(pending_alarm_id) = 5;
+            }
+            return;
+          }
+
+          // The reading timer ignores the weekday rule and the two school
+          // alarms, so it is evaluated before the weekday guard.
+          bool reading_due = false;
+          if (id(reading_end_epoch) > 0 &&
+              now.timestamp >= id(reading_end_epoch)) {
+            // A timer that expired while the device was powered off for a
+            // long time is dropped; ringing an hour late only confuses.
+            if (now.timestamp < id(reading_end_epoch) + 3600) {
+              reading_due = true;
+            }
+            id(reading_end_epoch) = 0;
+          }
+
+          const int day_key = now.year * 1000 + now.day_of_year;
+          const int now_minutes = now.hour * 60 + now.minute;
+          int grace = static_cast<int>(num(id(missed_alarm_grace_minutes).state, 2.0f));
+          if (grace < 0) grace = 0;
+          const bool allowed_day = !id(weekdays_only).state ||
+                                   (now.day_of_week >= 2 && now.day_of_week <= 6);
+
+          const auto alarm1 = id(alarm_1_time).state_as_esptime();
+          const auto alarm2 = id(alarm_2_time).state_as_esptime();
+          const int delta1 = now_minutes - (alarm1.hour * 60 + alarm1.minute);
+          const int delta2 = now_minutes - (alarm2.hour * 60 + alarm2.minute);
+          const int64_t key1 = static_cast<int64_t>(day_key) * 10000 +
+                               (alarm1.hour * 60 + alarm1.minute);
+          const int64_t key2 = static_cast<int64_t>(day_key) * 10000 +
+                               (alarm2.hour * 60 + alarm2.minute);
+          const bool fired1 = id(last_fired_alarm_1_key) == key1;
+          const bool fired2 = id(last_fired_alarm_2_key) == key2;
+
+          const bool due1 = allowed_day && id(alarm_1_enabled).state && !fired1 &&
+                            delta1 >= 0 && delta1 <= grace;
+          const bool due2 = allowed_day && id(alarm_2_enabled).state && !fired2 &&
+                            delta2 >= 0 && delta2 <= grace;
+
+          // One line per minute stating exactly why an alarm did or did not
+          // fire. Drop this once the first real wake-up has been confirmed.
+          ESP_LOGI("wecker",
+                   "%02d:%02d dow=%u allowed=%d grace=%d | "
+                   "W1 on=%d %02d:%02d delta=%+d fired=%d due=%d | "
+                   "W2 on=%d %02d:%02d delta=%+d fired=%d due=%d",
+                   now.hour, now.minute, static_cast<unsigned>(now.day_of_week),
+                   allowed_day ? 1 : 0, grace,
+                   id(alarm_1_enabled).state ? 1 : 0, alarm1.hour, alarm1.minute,
+                   delta1, fired1 ? 1 : 0, due1 ? 1 : 0,
+                   id(alarm_2_enabled).state ? 1 : 0, alarm2.hour, alarm2.minute,
+                   delta2, fired2 ? 1 : 0, due2 ? 1 : 0);
+
+          if (due1) id(last_fired_alarm_1_key) = key1;
+          if (due2) id(last_fired_alarm_2_key) = key2;
+
+          // A real wake alarm always wins over the reading timer.
+          if (due1 && due2) id(pending_alarm_id) = 5;
+          else if (due1) id(pending_alarm_id) = 1;
+          else if (due2) id(pending_alarm_id) = 2;
+          else if (reading_due) id(pending_alarm_id) = 7;
+
+      - if:
+          condition:
+            lambda: return id(alarm_stop_required);
+          then:
+            - script.execute: stop_alarm
+
+      - if:
+          condition:
+            lambda: return id(pending_alarm_id) != 0;
+          then:
+            - script.execute:
+                id: start_alarm
+                alarm_id: !lambda return id(pending_alarm_id);
+
+      # Resume sound after a reboot if a persisted ringing state is still valid.
+      - if:
+          condition:
+            lambda: |-
+              const bool ringing = id(alarm_state) == 1 || id(alarm_state) == 2 ||
+                                   id(alarm_state) == 5 || id(alarm_state) == 7;
+              return ringing && !id(alarm_sound_loop).is_running() &&
+                     !id(alarm_stop_required);
+          then:
+            - script.execute: alarm_sound_loop
+            - script.execute: alarm_animation_loop
+
+      # These entities otherwise have no polling interval. Refreshing them
+      # once per alarm evaluation also covers restored state after a restart.
+      - component.update: alarm_status
+      - component.update: reading_remaining
+
+button:
+  - platform: template
+    name: Wecker 1 testen
+    icon: mdi:alarm-check
+    on_press:
+      - script.execute:
+          id: start_alarm
+          alarm_id: 1
+
+  - platform: template
+    name: Wecker 2 testen
+    icon: mdi:alarm-check
+    on_press:
+      - script.execute:
+          id: start_alarm
+          alarm_id: 2
+
+  - platform: template
+    name: Alarm schlummern
+    icon: mdi:sleep
+    on_press:
+      - script.execute: snooze_alarm
+
+  - platform: template
+    name: Alarm beenden
+    icon: mdi:alarm-off
+    on_press:
+      - script.execute: stop_alarm

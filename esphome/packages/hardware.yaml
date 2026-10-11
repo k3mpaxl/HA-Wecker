@@ -1,0 +1,153 @@
+i2c:
+  id: tc001_i2c
+  sda: GPIO21
+  scl: GPIO22
+  frequency: 100kHz
+  scan: true
+
+output:
+  - platform: ledc
+    id: buzzer_output
+    pin:
+      number: GPIO15
+      ignore_strapping_warning: true
+    frequency: 1000Hz
+    zero_means_zero: true
+
+rtttl:
+  id: alarm_rtttl
+  output: buzzer_output
+  gain: 55%
+
+light:
+  - platform: esp32_rmt_led_strip
+    id: matrix_light
+    internal: true
+    pin: GPIO32
+    num_leds: 256
+    chipset: WS2812
+    channel_colors: GRB
+    default_transition_length: 0s
+    gamma_correct: 2.0
+    color_correct: [50%, 50%, 50%]
+    restore_mode: ALWAYS_OFF
+
+sensor:
+  - platform: adc
+    id: ambient_light_raw
+    pin: GPIO35
+    attenuation: 12db
+    update_interval: 10s
+    internal: true
+    filters:
+      - median:
+          window_size: 7
+          send_every: 1
+          send_first_at: 1
+    on_value:
+      then:
+        # Recalculate the scale without transmitting all 256 pixels. The next
+        # minute tick applies it to the matrix.
+        - script.execute:
+            id: apply_display_brightness
+            refresh_display: false
+
+  # A stock TC001 uses a divider ratio of about 1.79 (roughly 2.347 V at the
+  # ADC for a full 4.20 V cell). Keep the reconstructed voltage visible so
+  # the factor can be fine-tuned for another hardware revision if necessary.
+  - platform: adc
+    id: battery_voltage
+    name: Batteriespannung
+    pin: GPIO34
+    attenuation: 12db
+    update_interval: 60s
+    device_class: voltage
+    state_class: measurement
+    unit_of_measurement: V
+    accuracy_decimals: 2
+    filters:
+      - multiply: 1.79
+
+  - platform: template
+    id: battery_percentage
+    name: Batteriestand
+    icon: mdi:battery
+    device_class: battery
+    state_class: measurement
+    unit_of_measurement: "%"
+    accuracy_decimals: 0
+    update_interval: 60s
+    lambda: |-
+      const float voltage = id(battery_voltage).state;
+      if (isnan(voltage)) return NAN;
+
+      // Practical approximation of a one-cell LiPo discharge curve. Voltage
+      // under load and component tolerances make this an estimate, not a fuel
+      // gauge. The points deliberately map 3.70 V to the 20% warning level.
+      static const float volts[] = {3.30f, 3.60f, 3.70f, 3.80f,
+                                    3.90f, 4.00f, 4.10f, 4.20f};
+      static const float levels[] = {0.0f, 10.0f, 20.0f, 45.0f,
+                                     65.0f, 80.0f, 90.0f, 100.0f};
+
+      if (voltage <= volts[0]) return 0.0f;
+      if (voltage >= volts[7]) return 100.0f;
+      for (int i = 1; i < 8; i++) {
+        if (voltage <= volts[i]) {
+          const float ratio = (voltage - volts[i - 1]) /
+                              (volts[i] - volts[i - 1]);
+          return levels[i - 1] + ratio * (levels[i] - levels[i - 1]);
+        }
+      }
+      return 0.0f;
+
+  - platform: sht3xd
+    address: 0x44
+    update_interval: 60s
+    temperature:
+      id: tc001_temperature
+      name: Temperatur
+      filters:
+        # The sensor sits inside the warm enclosure and reads high. Compare
+        # against a reference thermometer in the room and enter the
+        # difference here; the raw value is otherwise unusable for automation.
+        - offset: 0.0
+        # One reading per minute is noisy enough to flicker the last digit.
+        - sliding_window_moving_average:
+            window_size: 5
+            send_every: 1
+    humidity:
+      id: tc001_humidity
+      name: Luftfeuchtigkeit
+      filters:
+        - sliding_window_moving_average:
+            window_size: 5
+            send_every: 1
+
+binary_sensor:
+  - platform: template
+    id: battery_is_low
+    name: Batterie schwach
+    icon: mdi:battery-alert
+    device_class: battery
+    lambda: |-
+      return !isnan(id(battery_percentage).state) &&
+             id(battery_percentage).state < 20.0f;
+
+interval:
+  - interval: 1min
+    startup_delay: 1min
+    then:
+      - if:
+          condition:
+            and:
+              - sensor.in_range:
+                  id: battery_percentage
+                  below: 20
+              - lambda: return id(alarm_state) == 0;
+              - not:
+                  rtttl.is_playing:
+                    id: alarm_rtttl
+          then:
+            - rtttl.play:
+                id: alarm_rtttl
+                rtttl: "lowbat:d=8,o=6,b=240:c7"

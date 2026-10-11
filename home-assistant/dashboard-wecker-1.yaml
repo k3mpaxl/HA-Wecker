@@ -1,0 +1,45 @@
+# Example Lovelace card. Home Assistant may choose slightly different entity
+# IDs during first discovery; adjust them once if necessary.
+type: entities
+title: Wecker 1
+show_header_toggle: false
+entities:
+  - entity: time.wecker_1_weckzeit_1_stunde
+    name: Weckzeit 1. Stunde
+  - entity: switch.wecker_1_wecker_1_stunde
+  - entity: time.wecker_1_weckzeit_2_stunde
+    name: Weckzeit 2. Stunde
+  - entity: switch.wecker_1_wecker_2_stunde
+  - entity: switch.wecker_1_nur_montag_bis_freitag
+  - entity: switch.wecker_1_uhr_nur_auf_tastendruck
+  - entity: switch.wecker_1_schlafmodus
+  - entity: binary_sensor.wecker_1_schlafmodus_aktiv
+  - entity: number.wecker_1_schlafmodus_vor_wecker
+  - entity: time.wecker_1_schlafmodus_ab
+  - entity: time.wecker_1_schlafmodus_bis
+  - entity: sensor.wecker_1_nachster_aktiver_wecker
+  - entity: sensor.wecker_1_alarmstatus
+  - entity: sensor.wecker_1_batteriestand
+  - entity: sensor.wecker_1_batteriespannung
+  - entity: binary_sensor.wecker_1_batterie_schwach
+  - entity: number.wecker_1_schlummerdauer
+  - entity: text.wecker_1_klingelton_1_stunde_rtttl
+  - entity: text.wecker_1_klingelton_2_stunde_rtttl
+  - entity: sensor.wecker_1_temperatur
+  - entity: sensor.wecker_1_luftfeuchtigkeit
+  - type: section
+    label: Lesetimer
+  - entity: binary_sensor.wecker_1_lesetimer_lauft
+  - entity: sensor.wecker_1_verbleibende_lesezeit
+  - entity: button.wecker_1_lesetimer_10_minuten
+  - entity: button.wecker_1_lesetimer_20_minuten
+  - entity: button.wecker_1_lesetimer_30_minuten
+  - entity: number.wecker_1_lesezeit
+  - entity: button.wecker_1_lesetimer_starten
+  - entity: button.wecker_1_lesetimer_abbrechen
+  - entity: text.wecker_1_klingelton_lesetimer_rtttl
+  - type: section
+    label: Test
+  - entity: button.wecker_1_wecker_1_testen
+  - entity: button.wecker_1_wecker_2_testen
+  - entity: button.wecker_1_alarm_beenden

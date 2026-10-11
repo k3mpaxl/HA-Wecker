@@ -1,0 +1,99 @@
+text_sensor:
+  - platform: template
+    id: alarm_status
+    name: Alarmstatus
+    icon: mdi:alarm-note
+    update_interval: never
+    lambda: |-
+      switch (id(alarm_state)) {
+        case 1: return {"Klingelt: 1. Stunde"};
+        case 2: return {"Klingelt: 2. Stunde"};
+        case 3: return {"Schlummert: 1. Stunde"};
+        case 4: return {"Schlummert: 2. Stunde"};
+        case 5: return {"Klingelt: beide"};
+        case 6: return {"Schlummert: beide"};
+        case 7: return {"Lesetimer klingelt"};
+        default: return {"Bereit"};
+      }
+
+  - platform: template
+    id: next_alarm
+    name: Nächster aktiver Wecker
+    icon: mdi:calendar-clock
+    update_interval: never
+    lambda: |-
+      if (!id(alarm_1_enabled).state && !id(alarm_2_enabled).state) {
+        return {"Kein Wecker aktiv"};
+      }
+
+      const auto now = id(rtc_time).now();
+      const auto a1 = id(alarm_1_time).state_as_esptime();
+      const auto a2 = id(alarm_2_time).state_as_esptime();
+      const int now_minutes = now.is_valid() ? now.hour * 60 + now.minute : 0;
+      int best_delta = 100000;
+      int best_alarm = 0;
+
+      for (int day = 0; day <= 7; day++) {
+        int dow = now.is_valid() ? ((now.day_of_week - 1 + day) % 7) + 1 : 2;
+        const bool allowed = !id(weekdays_only).state || (dow >= 2 && dow <= 6);
+        if (!allowed) continue;
+
+        if (id(alarm_1_enabled).state) {
+          const int delta = day * 1440 + a1.hour * 60 + a1.minute - now_minutes;
+          if (delta > 0 && delta < best_delta) {
+            best_delta = delta;
+            best_alarm = 1;
+          }
+        }
+        if (id(alarm_2_enabled).state) {
+          const int delta = day * 1440 + a2.hour * 60 + a2.minute - now_minutes;
+          if (delta > 0 && delta < best_delta) {
+            best_delta = delta;
+            best_alarm = 2;
+          }
+        }
+      }
+
+      char text[32];
+      const auto alarm = best_alarm == 1 ? a1 : a2;
+      snprintf(text, sizeof(text), "%d. Stunde %02d:%02d",
+               best_alarm, alarm.hour, alarm.minute);
+      return {text};
+
+  - platform: wifi_info
+    ip_address:
+      name: IP-Adresse
+      disabled_by_default: true
+
+binary_sensor:
+  - platform: template
+    id: alarm_is_ringing
+    name: Klingelt
+    device_class: sound
+    lambda: |-
+      return id(alarm_state) == 1 || id(alarm_state) == 2 ||
+             id(alarm_state) == 5;
+
+  - platform: template
+    id: alarm_is_snoozed
+    name: Schlummert
+    icon: mdi:sleep
+    lambda: |-
+      return id(alarm_state) == 3 || id(alarm_state) == 4 ||
+             id(alarm_state) == 6;
+
+sensor:
+  - platform: wifi_signal
+    name: WLAN-Signal
+    update_interval: 60s
+    disabled_by_default: true
+
+  - platform: uptime
+    name: Laufzeit
+    update_interval: 60s
+    disabled_by_default: true
+
+button:
+  - platform: restart
+    name: Neustart
+    disabled_by_default: true

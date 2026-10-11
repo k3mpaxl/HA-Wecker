@@ -1,0 +1,7 @@
+.DS_Store
+.venv/
+esphome/.esphome/
+esphome/secrets.yaml
+backups/
+# Real device files with private names and network details stay local.
+esphome/*-wecker.yaml

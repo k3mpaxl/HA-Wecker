@@ -1,0 +1,132 @@
+switch:
+  - platform: template
+    id: sleep_mode_enabled
+    name: Schlafmodus
+    icon: mdi:weather-night
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+    on_turn_on:
+      - script.execute: refresh_clock_state
+    on_turn_off:
+      - script.execute: refresh_clock_state
+
+number:
+  - platform: template
+    id: sleep_lead_minutes
+    name: Schlafmodus vor Wecker
+    icon: mdi:timer-sand
+    unit_of_measurement: min
+    min_value: 0
+    max_value: 1440
+    step: 15
+    initial_value: 480
+    optimistic: true
+    restore_value: true
+    on_value:
+      then:
+        - script.execute: refresh_clock_state
+
+datetime:
+  - platform: template
+    id: sleep_window_start
+    name: Schlafmodus ab
+    icon: mdi:weather-sunset-down
+    type: time
+    optimistic: true
+    restore_value: true
+    initial_value: "22:00:00"
+    on_value:
+      then:
+        - script.execute: refresh_clock_state
+
+  - platform: template
+    id: sleep_window_end
+    name: Schlafmodus bis
+    icon: mdi:weather-sunset-up
+    type: time
+    optimistic: true
+    restore_value: true
+    initial_value: "07:00:00"
+    on_value:
+      then:
+        - script.execute: refresh_clock_state
+
+binary_sensor:
+  - platform: template
+    id: sleep_mode_active
+    name: Schlafmodus aktiv
+    icon: mdi:power-sleep
+    lambda: |-
+      if (!id(sleep_mode_enabled).state) return false;
+
+      const auto now = id(rtc_time).now();
+      if (!now.is_valid()) return false;
+
+      const auto start_time = id(sleep_window_start).state_as_esptime();
+      const auto end_time = id(sleep_window_end).state_as_esptime();
+      const auto alarm1 = id(alarm_1_time).state_as_esptime();
+      const auto alarm2 = id(alarm_2_time).state_as_esptime();
+
+      const int current = now.hour * 60 + now.minute;
+      const int start = start_time.hour * 60 + start_time.minute;
+      const int end = end_time.hour * 60 + end_time.minute;
+      const int alarm1_minutes = alarm1.hour * 60 + alarm1.minute;
+      const int alarm2_minutes = alarm2.hour * 60 + alarm2.minute;
+
+      // The configured interval may cross midnight. Equal start/end disables
+      // only the fixed interval; the pre-alarm rule remains available.
+      bool in_fixed_window = false;
+      if (start < end) {
+        in_fixed_window = current >= start && current < end;
+      } else if (start > end) {
+        in_fixed_window = current >= start || current < end;
+      }
+
+      const bool today_allowed = !id(weekdays_only).state ||
+                                 (now.day_of_week >= 2 && now.day_of_week <= 6);
+      int first_alarm_today = 1441;
+      if (today_allowed && id(alarm_1_enabled).state) {
+        first_alarm_today = std::min(first_alarm_today, alarm1_minutes);
+      }
+      if (today_allowed && id(alarm_2_enabled).state) {
+        first_alarm_today = std::min(first_alarm_today, alarm2_minutes);
+      }
+
+      // Once the first active alarm in this sleep interval has been reached,
+      // stay awake until the next evening even if a second alarm is enabled.
+      bool wakeup_reached = false;
+      if (first_alarm_today <= 1440) {
+        if (start > end) {
+          if (first_alarm_today < end && current >= first_alarm_today &&
+              current < start) {
+            wakeup_reached = true;
+          } else if (first_alarm_today >= start && current >= first_alarm_today) {
+            wakeup_reached = true;
+          }
+        } else if (start < end && first_alarm_today >= start &&
+                   first_alarm_today < end && current >= first_alarm_today) {
+          wakeup_reached = true;
+        }
+      }
+
+      int next_alarm_delta = 100000;
+      const int now_weekday = static_cast<int>(now.day_of_week);
+      for (int day = 0; day <= 7; day++) {
+        const int weekday = ((now_weekday - 1 + day) % 7) + 1;
+        const bool allowed = !id(weekdays_only).state ||
+                             (weekday >= 2 && weekday <= 6);
+        if (!allowed) continue;
+
+        if (id(alarm_1_enabled).state) {
+          const int delta = day * 1440 + alarm1_minutes - current;
+          if (delta > 0) next_alarm_delta = std::min(next_alarm_delta, delta);
+        }
+        if (id(alarm_2_enabled).state) {
+          const int delta = day * 1440 + alarm2_minutes - current;
+          if (delta > 0) next_alarm_delta = std::min(next_alarm_delta, delta);
+        }
+      }
+
+      const int lead = static_cast<int>(id(sleep_lead_minutes).state);
+      const bool before_alarm = lead > 0 && next_alarm_delta <= lead;
+      return !wakeup_reached && (in_fixed_window || before_alarm);
