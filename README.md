@@ -151,8 +151,8 @@ ota:
     password: !secret wecker_1_ota_password
 ```
 
-Die Schriften unter `esphome/fonts/` werden vom Paket relativ zum Repository
-geladen. Die Secrets gehören in die `secrets.yaml` des Builders.
+Die Schriften liegen neben den Paketen (`esphome/packages/fonts/`), damit ESPHome
+sie auch beim Laden von GitHub findet. Die Secrets gehören in die `secrets.yaml` des Builders.
 
 ## Home Assistant
 
